@@ -94,9 +94,12 @@ class LanZouCloud(object):
         return LanZouCloud.FAILED
 
     def login(self, username, passwd) -> int:
-        """登录蓝奏云控制台"""
-        login_data = {"action": "login", "task": "login", "setSessionId": "", "setToken": "", "setSig": "",
-                      "setScene": "", "username": username, "password": passwd}
+        """
+        登录蓝奏云控制台[已弃用]
+        对某些用户可能有用
+        """
+        login_data = {"task": "3", "setSessionId": "", "setToken": "", "setSig": "",
+                      "setScene": "", "uid": username, "pwd": passwd}
         phone_header = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 5.0; SM-G900P Build/LRX21T) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/82.0.4051.0 Mobile Safari/537.36"}
         html = self._get(self._account_url)
@@ -106,13 +109,16 @@ class LanZouCloud(object):
         if not formhash:
             return LanZouCloud.FAILED
         login_data['formhash'] = formhash[0]
-        html = self._post(self._account_url, login_data, headers=phone_header)
+        html = self._post(self._mydisk_url, login_data, headers=phone_header)
         if not html:
             return LanZouCloud.NETWORK_ERROR
-        if '登录成功' in html.text:
-            self._cookies = html.cookies.get_dict()
-            return LanZouCloud.SUCCESS
-        else:
+        try:
+            if '成功' in html.json()['info']:
+                self._cookies = html.cookies.get_dict()
+                return LanZouCloud.SUCCESS
+            else:
+                return LanZouCloud.FAILED
+        except ValueError:
             return LanZouCloud.FAILED
 
     def get_cookie(self) -> dict:
@@ -374,7 +380,7 @@ class LanZouCloud(object):
                 Folder(
                     id=int(folder['fol_id']),
                     name=folder['name'],
-                    has_pwd=True if folder['onof'] == 1 else False,
+                    has_pwd=True if int(folder['onof']) == 1 else False,
                     desc=folder['folder_des'].strip('[]')
                 ))
         return folder_list
@@ -565,9 +571,12 @@ class LanZouCloud(object):
         return ShareInfo(LanZouCloud.SUCCESS, name=name, url=url, desc=desc, pwd=pwd)
 
     def set_passwd(self, fid, passwd='', is_file=True) -> int:
-        """设置网盘文件(夹)的提取码"""
-        # id 无效或者 id 类型不对应仍然返回成功 :(
-        # 文件夹提取码长度 0-12 位  文件提取码 2-6 位
+        """
+        设置网盘文件(夹)的提取码, 现在非会员用户不允许关闭提取码
+        id 无效或者 id 类型不对应仍然返回成功 :(
+        文件夹提取码长度 0-12 位  文件提取码 2-6 位
+        """
+
         passwd_status = 0 if passwd == '' else 1  # 是否开启密码
         if is_file:
             post_data = {"task": 23, "file_id": fid, "shows": passwd_status, "shownames": passwd}
@@ -938,8 +947,26 @@ class LanZouCloud(object):
         resp = self._get(info.durl, stream=True)
         if not resp:
             return LanZouCloud.FAILED
-        total_size = int(resp.headers['Content-Length'])
 
+        content_length = resp.headers.get('Content-Length', None)
+        # 如果无法获取 Content-Length, 先读取一点数据, 再尝试获取一次
+        # 通常只需读取 1 字节数据
+        data_iter = resp.iter_content(chunk_size=1)
+        while not content_length:
+            logger.warning("Not found Content-Length in response headers")
+            logger.debug("Read 1 byte from stream...")
+            try:
+                next(data_iter)
+            except StopIteration:
+                logger.debug("Please wait for a moment before downloading")
+                return LanZouCloud.FAILED
+            resp_ = self._get(info.durl, stream=True)
+            if not resp_:
+                return LanZouCloud.FAILED
+            content_length = resp_.headers.get('Content-Length', None)
+            logger.debug(f"Content-Length: {content_length}")
+
+        total_size = int(content_length)
         file_path = save_path + os.sep + info.name
         if os.path.exists(file_path):
             if overwrite:
